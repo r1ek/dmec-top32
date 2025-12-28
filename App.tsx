@@ -1,4 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useMutation, useQuery } from "convex/react";
+import { api } from "./convex/_generated/api";
 import { AppPhase } from './constants';
 import type { Participant, BracketData, Match, ChampionshipStanding, AppState } from './types';
 import QualificationView from './components/QualificationView';
@@ -23,109 +25,97 @@ const getInitialState = (): AppState => {
 const App: React.FC = () => {
   const [appState, setAppState] = useState<AppState>(getInitialState);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const broadcastTimeoutRef = useRef<number | null>(null);
+  const [adminSecret, setAdminSecret] = useState<string | null>(null);
+  const saveTimeoutRef = useRef<number | null>(null);
 
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const sessionParam = useMemo(() => urlParams.get('session'), [urlParams]);
   const liveParam = useMemo(() => urlParams.get('live'), [urlParams]);
 
+  // Convex mutations
+  const createSession = useMutation(api.sessions.createSession);
+  const updateSessionState = useMutation(api.sessions.updateSessionState);
+
+  // Subscribe to session updates (for receiving registrations from participants)
+  const convexSession = useQuery(
+    api.sessions.getSession,
+    sessionId ? { sessionId } : "skip"
+  );
+
+  // Sync registrations from Convex to local state
   useEffect(() => {
-    if (!sessionParam && !liveParam && sessionId) {
-        const eventSource = new EventSource(`https://ntfy.sh/${sessionId}/sse`);
+    if (convexSession && sessionId && adminSecret) {
+      // Check if there are new participants in Convex that we don't have locally
+      const convexStandingIds = new Set(convexSession.standings.map(s => s.id));
+      const localStandingIds = new Set(appState.standings.map(s => s.id));
 
-        eventSource.onmessage = (event) => {
-            try {
-                const message = JSON.parse(event.data);
-                // Only process actual message events, not open/keepalive events
-                if (message.event !== 'message') {
-                    return;
-                }
-                if (message.title && message.title.startsWith('Uus registreerimine')) {
-                    const newParticipantData = JSON.parse(message.message);
+      // Find new participants added via registration
+      const newParticipants = convexSession.standings.filter(s => !localStandingIds.has(s.id));
 
-                    if (newParticipantData && newParticipantData.id && newParticipantData.name) {
-                        setAppState(prev => {
-                            const isDuplicate = prev.standings.some(p => p.name.toLowerCase() === newParticipantData.name.toLowerCase());
-                            if (isDuplicate) {
-                                console.warn(`Duplicate registration rejected: ${newParticipantData.name}`);
-                                return prev;
-                            }
-
-                            const newParticipant: ChampionshipStanding = {
-                                ...newParticipantData,
-                                pointsPerCompetition: Array(prev.competitionsHeld).fill(0),
-                            };
-
-                            return { ...prev, standings: [...prev.standings, newParticipant] };
-                        });
-                    }
-                }
-            } catch (e) {
-                console.error("Failed to process registration message:", e);
-            }
-        };
-
-        eventSource.onerror = (err) => {
-            console.error("EventSource failed:", err);
-            eventSource.close();
-        };
-
-        return () => {
-            eventSource.close();
-        };
+      if (newParticipants.length > 0) {
+        setAppState(prev => ({
+          ...prev,
+          standings: [...prev.standings, ...newParticipants.map(p => ({
+            id: p.id,
+            name: p.name,
+            pointsPerCompetition: p.pointsPerCompetition,
+          }))]
+        }));
+      }
     }
-  }, [sessionId, sessionParam, liveParam]);
-  
-  const broadcastState = useCallback(async (stateToBroadcast: AppState) => {
-    if (!sessionId) return;
+  }, [convexSession?.standings, sessionId, adminSecret]);
+
+  // Save state to Convex (debounced)
+  const saveToConvex = useCallback(async (stateToSave: AppState) => {
+    if (!sessionId || !adminSecret) return;
+
     try {
-      await fetch(`https://ntfy.sh/${sessionId}`, {
-        method: 'POST',
-        body: JSON.stringify(stateToBroadcast),
-        headers: {
-          'Title': 'AppStateUpdate',
-          'Tags': 'arrows_clockwise'
-        }
+      await updateSessionState({
+        sessionId,
+        adminSecret,
+        state: {
+          phase: stateToSave.phase,
+          standings: stateToSave.standings,
+          competitionParticipants: stateToSave.competitionParticipants,
+          bracket: stateToSave.bracket,
+          thirdPlaceMatch: stateToSave.thirdPlaceMatch,
+          totalCompetitions: stateToSave.totalCompetitions,
+          competitionsHeld: stateToSave.competitionsHeld,
+        },
       });
     } catch (e) {
-      console.error("Failed to broadcast state:", e);
+      console.error("Failed to save state to Convex:", e);
     }
-  }, [sessionId]);
+  }, [sessionId, adminSecret, updateSessionState]);
 
-  // Broadcast initial state immediately when live view is enabled
-  const isInitialBroadcast = useRef(false);
+  // Debounced save effect
+  const isInitialSync = useRef(false);
   useEffect(() => {
-    if (sessionId && !isInitialBroadcast.current) {
-      // First broadcast happens immediately so late joiners can fetch it
-      broadcastState(appState);
-      isInitialBroadcast.current = true;
-    }
-  }, [sessionId, appState, broadcastState]);
-
-  // Debounced broadcasts for subsequent state changes
-  useEffect(() => {
-    if (sessionId && isInitialBroadcast.current) {
-      if (broadcastTimeoutRef.current) {
-        clearTimeout(broadcastTimeoutRef.current);
+    if (sessionId && adminSecret) {
+      if (!isInitialSync.current) {
+        // First sync happens immediately
+        saveToConvex(appState);
+        isInitialSync.current = true;
+      } else {
+        // Subsequent changes are debounced (500ms - Convex handles high frequency better than ntfy.sh)
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current);
+        }
+        saveTimeoutRef.current = window.setTimeout(() => {
+          saveToConvex(appState);
+        }, 500);
       }
-      // See viivitus (debounce) on kriitilise tähtsusega. See väldib ntfy.sh serveri ülekoormamist
-      // (viga 429 - Too Many Requests), mis juhtub, kui administraator sisestab tulemusi kiiresti.
-      // 1-sekundiline ooteaeg tagab tasakaalu reaalajas uuenduste ja serveri stabiilsuse vahel,
-      // lahendades sellega nii registreerimise kui ka reaalajas vaate probleemide algpõhjuse.
-      broadcastTimeoutRef.current = window.setTimeout(() => {
-        broadcastState(appState);
-      }, 1000);
     }
     return () => {
-      if (broadcastTimeoutRef.current) {
-        clearTimeout(broadcastTimeoutRef.current);
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [appState, sessionId, broadcastState]);
+  }, [appState, sessionId, adminSecret, saveToConvex]);
 
 
   const { phase, standings, competitionParticipants, bracket, thirdPlaceMatch, totalCompetitions, competitionsHeld } = appState;
-  
+
   const setStandings = useCallback((updater: React.SetStateAction<ChampionshipStanding[]>) => {
      setAppState(prev => {
         const newStandings = typeof updater === 'function' ? updater(prev.standings) : updater;
@@ -260,7 +250,7 @@ const App: React.FC = () => {
                 }
             }
         }
-        
+
         const numRounds = newBracket.length;
         if (numRounds > 1 && !newThirdPlaceMatch) {
             const semiFinals = newBracket[numRounds - 2];
@@ -273,20 +263,20 @@ const App: React.FC = () => {
                 };
 
                 const losers = semiFinals.map(findLoser).filter((p): p is Participant => p !== null);
-                
+
                 if (losers.length === 2) {
                     const [p1, p2] = losers[0].seed < losers[1].seed ? [losers[0], losers[1]] : [losers[1], losers[0]];
                     newThirdPlaceMatch = { id: 999, roundIndex: -1, matchIndex: 0, participant1: p1, participant2: p2, winner: null, nextMatchId: null };
                 } else if (losers.length === 1) {
                     const singleLoser = losers[0];
-                    newThirdPlaceMatch = { 
-                        id: 999, 
-                        roundIndex: -1, 
-                        matchIndex: 0, 
-                        participant1: singleLoser, 
-                        participant2: null, 
-                        winner: singleLoser, 
-                        nextMatchId: null 
+                    newThirdPlaceMatch = {
+                        id: 999,
+                        roundIndex: -1,
+                        matchIndex: 0,
+                        participant1: singleLoser,
+                        participant2: null,
+                        winner: singleLoser,
+                        nextMatchId: null
                     };
                 }
             }
@@ -346,11 +336,11 @@ const App: React.FC = () => {
             pointsPerCompetition: [...standing.pointsPerCompetition, pointsToAdd.get(standing.id) || 0],
         }));
         newStandings.sort((a, b) => b.pointsPerCompetition.reduce((s, p) => s + p, 0) - a.pointsPerCompetition.reduce((s, p) => s + p, 0));
-        
+
         return {
-          ...prev, 
-          standings: newStandings, 
-          competitionsHeld: prev.competitionsHeld + 1, 
+          ...prev,
+          standings: newStandings,
+          competitionsHeld: prev.competitionsHeld + 1,
           phase: AppPhase.CHAMPIONSHIP_VIEW
         };
     });
@@ -358,21 +348,28 @@ const App: React.FC = () => {
 
   const handleResetChampionship = useCallback(() => {
     setAppState(getInitialState());
+    isInitialSync.current = false;
   }, []);
-  
+
   const handleSetTotalCompetitions = useCallback((count: number) => {
     setAppState(prev => ({...prev, totalCompetitions: count}));
   }, []);
 
-  const handleEnableLiveView = useCallback(() => {
+  const handleEnableLiveView = useCallback(async () => {
     const newSessionId = `dmec-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-    setSessionId(newSessionId);
-  }, []);
+    try {
+      const result = await createSession({ sessionId: newSessionId });
+      setSessionId(result.sessionId);
+      setAdminSecret(result.adminSecret);
+    } catch (e) {
+      console.error("Failed to create session:", e);
+    }
+  }, [createSession]);
 
   if (sessionParam) {
     return <RegistrationPage sessionId={sessionParam} />;
   }
-  
+
   if (liveParam) {
     return <LiveResultsView sessionId={liveParam} />;
   }
@@ -386,7 +383,7 @@ const App: React.FC = () => {
       </header>
       <main>
         {phase === AppPhase.CHAMPIONSHIP_VIEW && (
-            <ChampionshipView 
+            <ChampionshipView
                 standings={standings}
                 setStandings={setStandings}
                 onStartCompetition={handleStartCompetition}
@@ -399,18 +396,18 @@ const App: React.FC = () => {
             />
         )}
         {phase === AppPhase.QUALIFICATION && (
-          <QualificationView 
-            participants={competitionParticipants} 
+          <QualificationView
+            participants={competitionParticipants}
             setParticipants={setCompetitionParticipants}
             onStartBracket={handleStartBracket}
           />
         )}
         {(phase === AppPhase.BRACKET || phase === AppPhase.FINISHED) && (
-          <TournamentBracket 
+          <TournamentBracket
             participants={competitionParticipants}
-            bracketData={bracket} 
+            bracketData={bracket}
             thirdPlaceMatch={thirdPlaceMatch}
-            onSetWinner={handleSetWinner} 
+            onSetWinner={handleSetWinner}
             phase={phase}
             onReturnToChampionship={handleReturnToChampionship}
           />

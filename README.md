@@ -1,20 +1,86 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Salajase Pleistaühingu DMEC
 
-# Run and deploy your AI Studio app
+Tournament management application for organizing multi-stage championships with real-time spectator viewing.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/drive/1xOWwC4TZPIxfGbFF14IclpsG8k8_nq-w
+- **Season Management**: Track standings across multiple competitions
+- **Qualification Rounds**: Score-based qualification with automatic ranking
+- **Tournament Brackets**: Auto-generated seeded brackets with third-place match
+- **Live View**: Real-time spectator mode with instant updates
+- **Self-Registration**: Participants can register via shared link
+
+## Tech Stack
+
+- React 19 + TypeScript
+- Vite
+- Convex (real-time database)
+- TailwindCSS
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
+**Prerequisites:** Node.js 18+
 
+```bash
+# Install dependencies
+npm install
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+# Start Convex dev server (first time: creates project)
+npx convex dev
+
+# In another terminal, start the app
+npm run dev
+```
+
+The app runs at `http://localhost:5173`
+
+## Environment Variables
+
+Create `.env.local` with:
+
+```env
+CONVEX_DEPLOYMENT=dev:your-deployment-name
+VITE_CONVEX_URL=https://your-deployment.convex.cloud
+```
+
+These are auto-generated when you run `npx convex dev` for the first time.
+
+## Deployment
+
+### Frontend (Vercel)
+
+1. Push to GitHub
+2. Import project in [Vercel](https://vercel.com)
+3. Set environment variable: `VITE_CONVEX_URL` = your Convex production URL
+4. Deploy
+
+### Backend (Convex)
+
+```bash
+# Deploy to production
+npx convex deploy
+```
+
+### Auto-Deploy
+
+Vercel auto-deploys on push to `main`. For Convex, add to your CI:
+
+```yaml
+- run: npx convex deploy
+  env:
+    CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+```
+
+Get your deploy key from [Convex dashboard](https://dashboard.convex.dev) → Project Settings → Deploy Key.
+
+## URL Modes
+
+| URL | Mode |
+|-----|------|
+| `/` | Admin interface |
+| `/?session=<id>` | Participant registration |
+| `/?live=<id>` | Spectator view (real-time) |
+
+## License
+
+Private project.

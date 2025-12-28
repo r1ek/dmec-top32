@@ -1,35 +1,48 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
-import type { AppState, ChampionshipStanding, Participant } from '../types';
+import React, { useState, useMemo } from 'react';
+import { useQuery } from "convex/react";
+import { api } from "../convex/_generated/api";
+import type { ChampionshipStanding, Participant } from '../types';
 import { AppPhase } from '../constants';
 import TournamentBracket from './TournamentBracket';
 
 type ConnectionStatus = 'connecting' | 'live' | 'error';
 
-const LiveQualificationResults: React.FC<{ participants: Participant[] }> = ({ participants }) => {
-    const sortedParticipants = useMemo(() => 
+const LiveQualificationResults: React.FC<{ participants: Participant[], defaultCollapsed?: boolean }> = ({ participants, defaultCollapsed = false }) => {
+    const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
+    const sortedParticipants = useMemo(() =>
         [...participants]
         .filter(p => p.score !== null)
         .sort((a, b) => (b.score ?? 0) - (a.score ?? 0)),
      [participants]);
 
     return (
-        <div className="max-w-4xl mx-auto bg-gray-800 p-6 rounded-lg shadow-xl">
-             <h2 className="text-2xl font-bold text-blue-300 mb-4">Kvalifikatsiooni tulemused</h2>
-             <div className="space-y-2 max-h-96 overflow-y-auto pr-2">
-                {sortedParticipants.length === 0 ? (
-                    <p className="text-center text-gray-500 py-8">Kvalifikatsioon pole veel alanud või tulemusi pole sisestatud.</p>
-                ) : (
-                    sortedParticipants.map((p, index) => (
-                        <div key={p.id} className="flex items-center justify-between gap-4 p-3 rounded-md bg-gray-700">
-                            <div className="flex items-center gap-4">
-                                <span className="font-bold text-lg w-8 text-center">{index + 1}.</span>
-                                <span className="font-semibold text-lg">{p.name}</span>
+        <div className="max-w-4xl mx-auto bg-gray-800 rounded-lg shadow-xl overflow-hidden">
+             <button
+                onClick={() => setIsCollapsed(!isCollapsed)}
+                className="w-full p-6 flex items-center justify-between hover:bg-gray-700/50 transition-colors"
+             >
+                <h2 className="text-2xl font-bold text-blue-300">Kvalifikatsiooni tulemused</h2>
+                <span className={`text-gray-400 transition-transform ${isCollapsed ? '' : 'rotate-180'}`}>
+                    ▼
+                </span>
+             </button>
+             {!isCollapsed && (
+                <div className="px-6 pb-6 space-y-2 max-h-96 overflow-y-auto">
+                    {sortedParticipants.length === 0 ? (
+                        <p className="text-center text-gray-500 py-8">Kvalifikatsioon pole veel alanud või tulemusi pole sisestatud.</p>
+                    ) : (
+                        sortedParticipants.map((p, index) => (
+                            <div key={p.id} className="flex items-center justify-between gap-4 p-3 rounded-md bg-gray-700">
+                                <div className="flex items-center gap-4">
+                                    <span className="font-bold text-lg w-8 text-center">{index + 1}.</span>
+                                    <span className="font-semibold text-lg">{p.name}</span>
+                                </div>
+                                <span className="font-bold text-xl text-yellow-400">{p.score}</span>
                             </div>
-                            <span className="font-bold text-xl text-yellow-400">{p.score}</span>
-                        </div>
-                    ))
-                )}
-             </div>
+                        ))
+                    )}
+                </div>
+             )}
         </div>
     );
 };
@@ -94,144 +107,35 @@ const LiveStatusIndicator: React.FC<{ status: ConnectionStatus }> = ({ status })
 
 
 const LiveResultsView: React.FC<{ sessionId: string }> = ({ sessionId }) => {
-    const [liveState, setLiveState] = useState<AppState | null>(null);
-    const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
-    const reconnectTimeoutRef = useRef<number | null>(null);
-    const eventSourceRef = useRef<EventSource | null>(null);
+    // This ONE line replaces all SSE/fetch/reconnection logic from ntfy.sh!
+    // Convex handles real-time subscriptions, reconnection, and state sync automatically.
+    const session = useQuery(api.sessions.getSession, { sessionId });
+
     const [showEasterEgg, setShowEasterEgg] = useState(false);
     const [easterEggPosition, setEasterEggPosition] = useState({ x: 50, y: 50 });
 
-    useEffect(() => {
-        let isComponentMounted = true;
+    // Derive connection status from query state
+    const connectionStatus: ConnectionStatus = session === undefined ? 'connecting' : 'live';
 
-        // Helper function to extract state from ntfy message (handles both inline and attachment)
-        const extractStateFromMessage = async (ntfyMessage: any): Promise<AppState | null> => {
-            if (ntfyMessage.event !== 'message' || ntfyMessage.title !== 'AppStateUpdate') {
-                return null;
-            }
-
-            // Check if state is in an attachment (happens when message is too large)
-            if (ntfyMessage.attachment && ntfyMessage.attachment.url) {
-                try {
-                    const attachmentResponse = await fetch(ntfyMessage.attachment.url);
-                    if (!attachmentResponse.ok) {
-                        console.error("Failed to fetch attachment:", attachmentResponse.statusText);
-                        return null;
-                    }
-                    return await attachmentResponse.json();
-                } catch (e) {
-                    console.error("Failed to parse attachment:", e);
-                    return null;
-                }
-            }
-
-            // Otherwise, state is inline in the message field
-            if (ntfyMessage.message) {
-                try {
-                    return JSON.parse(ntfyMessage.message);
-                } catch (e) {
-                    console.error("Failed to parse inline message:", e);
-                    return null;
-                }
-            }
-
-            return null;
-        };
-
-        // See funktsioon laeb lehe avamisel kohe viimase salvestatud seisu. See tagab,
-        // et kasutaja näeb koheselt tulemusi ega pea ootama esimest reaalajas uuendust.
-        const fetchInitialState = async () => {
-            try {
-                const response = await fetch(`https://ntfy.sh/${sessionId}/json?poll=1`);
-                if (!response.ok) {
-                    // 404 is normal if no messages exist yet - will get updates via SSE
-                    if (response.status === 404) {
-                        console.log("No messages yet, waiting for live updates");
-                        return;
-                    }
-                    console.warn(`Could not fetch initial state: ${response.statusText}`);
-                    return;
-                }
-                const ntfyMessage = await response.json();
-                const newState = await extractStateFromMessage(ntfyMessage);
-                if (newState && isComponentMounted) {
-                    setLiveState(newState);
-                    setConnectionStatus('live');
-                }
-            } catch (e) {
-                // Log but don't show error to user - SSE will provide updates
-                console.log("Could not fetch initial state, waiting for live updates:", e);
-            }
-        };
-
-        const connectSSE = () => {
-            if (!isComponentMounted) return;
-
-            const eventSource = new EventSource(`https://ntfy.sh/${sessionId}/sse`);
-            eventSourceRef.current = eventSource;
-
-            eventSource.onopen = () => {
-                if (isComponentMounted) {
-                    setConnectionStatus('live');
-                }
-            };
-
-            eventSource.onmessage = async (event) => {
-                try {
-                    const ntfyMessage = JSON.parse(event.data);
-                    // Only process actual message events, not open/keepalive events
-                    if (ntfyMessage.event !== 'message') {
-                        return;
-                    }
-                    const newState = await extractStateFromMessage(ntfyMessage);
-                    if (newState && isComponentMounted) {
-                        setLiveState(newState);
-                        setConnectionStatus('live');
-
-                        // Easter egg: show leks when new update arrives!
-                        setEasterEggPosition({
-                            x: Math.random() * 80 + 10, // 10-90% of screen width
-                            y: Math.random() * 80 + 10, // 10-90% of screen height
-                        });
-                        setShowEasterEgg(true);
-                        setTimeout(() => setShowEasterEgg(false), 2500);
-                    }
-                } catch (e) {
-                    console.error("Failed to parse state update:", e);
-                }
-            };
-
-            eventSource.onerror = (err) => {
-                console.error("EventSource failed:", err);
-                eventSource.close();
-
-                if (isComponentMounted) {
-                    setConnectionStatus('connecting');
-                    // Attempt to reconnect after 3 seconds
-                    reconnectTimeoutRef.current = window.setTimeout(() => {
-                        console.log("Attempting to reconnect...");
-                        connectSSE();
-                    }, 3000);
-                }
-            };
-        };
-
-        fetchInitialState();
-        connectSSE();
-
-        return () => {
-            isComponentMounted = false;
-            if (eventSourceRef.current) {
-                eventSourceRef.current.close();
-            }
-            if (reconnectTimeoutRef.current) {
-                clearTimeout(reconnectTimeoutRef.current);
-            }
-        };
-    }, [sessionId]);
+    // Easter egg trigger on session updates
+    const lastUpdateRef = React.useRef<number | null>(null);
+    React.useEffect(() => {
+        if (session?.updatedAt && lastUpdateRef.current !== null && lastUpdateRef.current !== session.updatedAt) {
+            // New update received - show easter egg
+            setEasterEggPosition({
+                x: Math.random() * 80 + 10,
+                y: Math.random() * 80 + 10,
+            });
+            setShowEasterEgg(true);
+            setTimeout(() => setShowEasterEgg(false), 2500);
+        }
+        if (session?.updatedAt) {
+            lastUpdateRef.current = session.updatedAt;
+        }
+    }, [session?.updatedAt]);
 
     const renderContent = () => {
-        if (!liveState) {
+        if (!session) {
             return (
                 <div className="text-center py-20 max-w-2xl mx-auto">
                     <div className="mb-6">
@@ -269,20 +173,25 @@ const LiveResultsView: React.FC<{ sessionId: string }> = ({ sessionId }) => {
             );
         }
 
-        const { phase, competitionParticipants, bracket, thirdPlaceMatch, standings, competitionsHeld } = liveState;
+        const { phase, competitionParticipants, bracket, thirdPlaceMatch, standings, competitionsHeld } = session;
+
+        const showBracket = phase === AppPhase.BRACKET || phase === AppPhase.FINISHED;
 
         return (
             <div className="space-y-8">
-                { (phase === AppPhase.QUALIFICATION || phase === AppPhase.BRACKET || phase === AppPhase.FINISHED) && 
-                    <LiveQualificationResults participants={competitionParticipants} />
+                { (phase === AppPhase.QUALIFICATION || showBracket) &&
+                    <LiveQualificationResults
+                        participants={competitionParticipants}
+                        defaultCollapsed={showBracket}
+                    />
                 }
-                { (phase === AppPhase.BRACKET || phase === AppPhase.FINISHED) && 
+                { showBracket &&
                     <TournamentBracket
                         participants={competitionParticipants}
                         bracketData={bracket}
                         thirdPlaceMatch={thirdPlaceMatch}
                         onSetWinner={() => {}} // Read-only, so no-op
-                        phase={phase}
+                        phase={phase as any}
                         onReturnToChampionship={() => {}} // Not applicable
                         isReadOnly={true}
                     />

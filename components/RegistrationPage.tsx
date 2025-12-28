@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { useMutation } from "convex/react";
+import { api } from "../convex/_generated/api";
 
 interface RegistrationPageProps {
   sessionId: string;
@@ -9,6 +11,8 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ sessionId }) => {
   const [isRegistered, setIsRegistered] = useState(false);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const registerParticipant = useMutation(api.sessions.registerParticipant);
 
   useEffect(() => {
     if (isRegistered) {
@@ -28,38 +32,23 @@ const RegistrationPage: React.FC<RegistrationPageProps> = ({ sessionId }) => {
     setError('');
     setIsSubmitting(true);
 
-    const trimmedName = name.trim();
-
-    const newParticipant = {
-      id: Date.now(),
-      name: trimmedName,
-      pointsPerCompetition: [],
-    };
-
-    const newParticipantJson = JSON.stringify(newParticipant);
-    
     try {
-        const response = await fetch(`https://ntfy.sh/${sessionId}`, {
-            method: 'POST',
-            body: newParticipantJson,
-            headers: {
-                'Title': 'Uus registreerimine: ' + trimmedName,
-                'Tags': 'person_add'
-            }
-        });
-
-        if (!response.ok) {
-            setError(`Registreerimine ebaõnnestus serveri vea tõttu (${response.status}). Proovi uuesti.`);
-            setIsSubmitting(false);
-            return;
-        }
-        
-        setIsRegistered(true);
-
-    } catch (err) {
-        console.error("Registration failed:", err);
-        setError('Registreerimine ebaõnnestus võrguvea tõttu. Kontrolli internetiühendust ja proovi uuesti.');
-        setIsSubmitting(false);
+      await registerParticipant({
+        sessionId,
+        name: name.trim(),
+      });
+      setIsRegistered(true);
+    } catch (err: any) {
+      console.error("Registration failed:", err);
+      // Handle specific error messages from Convex
+      if (err.message?.includes('juba registreeritud') || err.message?.includes('juba olemas')) {
+        setError('See nimi on juba registreeritud. Proovi teist nime.');
+      } else if (err.message?.includes('not found')) {
+        setError('Võistlust ei leitud. Kontrolli linki ja proovi uuesti.');
+      } else {
+        setError('Registreerimine ebaõnnestus. Proovi uuesti.');
+      }
+      setIsSubmitting(false);
     }
   };
 
