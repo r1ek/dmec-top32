@@ -32,6 +32,14 @@ export enum AppPhase {
   FINISHED = 'FINISHED',
 }
 
+export interface ActiveVote {
+  voteId: string;
+  matchId: number;
+  participant1Name: string;
+  participant2Name: string;
+  votes: ('p1' | 'p2' | 'omt')[];
+}
+
 export interface AppState {
   phase: AppPhase;
   standings: ChampionshipStanding[];

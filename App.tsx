@@ -35,6 +35,9 @@ const App: React.FC = () => {
   // Convex mutations
   const createSession = useMutation(api.sessions.createSession);
   const updateSessionState = useMutation(api.sessions.updateSessionState);
+  const startVoteMutation = useMutation(api.sessions.startVote);
+  const closeVoteMutation = useMutation(api.sessions.closeVote);
+  const castVoteMutation = useMutation(api.sessions.castVote);
 
   // Subscribe to session updates (for receiving registrations from participants)
   const convexSession = useQuery(
@@ -216,68 +219,103 @@ const App: React.FC = () => {
 
   const handleSetWinner = useCallback((matchId: number, winner: Participant) => {
     setAppState(prev => {
-        let newThirdPlaceMatch = prev.thirdPlaceMatch;
-        let newBracket = JSON.parse(JSON.stringify(prev.bracket));
+        let newThirdPlaceMatch: Match | null = prev.thirdPlaceMatch ? JSON.parse(JSON.stringify(prev.thirdPlaceMatch)) : null;
+        let newBracket: BracketData = JSON.parse(JSON.stringify(prev.bracket));
         let newPhase = prev.phase;
+
+        const findMatchInBracket = (bracket: BracketData, id: number): Match | null => {
+            for (const round of bracket) {
+                const found = round.find(m => m.id === id);
+                if (found) return found;
+            }
+            return null;
+        };
+
+        // Recursively clear a participant from downstream matches
+        const clearDownstream = (bracket: BracketData, match: Match, oldParticipantId: number) => {
+            if (!match) return;
+            // Find and remove the old participant from this match
+            if (match.participant1?.id === oldParticipantId) match.participant1 = null;
+            if (match.participant2?.id === oldParticipantId) match.participant2 = null;
+            // If this match's winner was the old participant, clear and recurse
+            if (match.winner?.id === oldParticipantId) {
+                match.winner = null;
+                if (match.nextMatchId !== null) {
+                    const nextMatch = findMatchInBracket(bracket, match.nextMatchId);
+                    if (nextMatch) clearDownstream(bracket, nextMatch, oldParticipantId);
+                }
+            }
+        };
 
         if (newThirdPlaceMatch && matchId === newThirdPlaceMatch.id) {
             newThirdPlaceMatch = { ...newThirdPlaceMatch, winner };
         } else {
-            let matchToUpdate: Match | null = null;
-            for (let i = 0; i < newBracket.length; i++) {
-                const foundMatch = newBracket[i].find(m => m.id === matchId);
-                if (foundMatch) {
-                    matchToUpdate = foundMatch;
-                    break;
-                }
-            }
+            const matchToUpdate = findMatchInBracket(newBracket, matchId);
 
-            if (matchToUpdate && !matchToUpdate.winner) {
+            if (matchToUpdate) {
+                const oldWinner = matchToUpdate.winner;
                 matchToUpdate.winner = winner;
+
                 if (matchToUpdate.nextMatchId !== null) {
-                    let nextMatch: Match | null = null;
-                    for (const round of newBracket) {
-                        nextMatch = round.find(m => m.id === matchToUpdate.nextMatchId) || null;
-                        if (nextMatch) break;
-                    }
+                    const nextMatch = findMatchInBracket(newBracket, matchToUpdate.nextMatchId);
                     if (nextMatch) {
-                        if (matchToUpdate.matchIndex % 2 === 0) nextMatch.participant1 = winner;
-                        else nextMatch.participant2 = winner;
+                        // Determine where old winner sits BEFORE clearing
+                        let slotForNewWinner: 'p1' | 'p2' | null = null;
+                        if (oldWinner) {
+                            if (nextMatch.participant1?.id === oldWinner.id) slotForNewWinner = 'p1';
+                            else if (nextMatch.participant2?.id === oldWinner.id) slotForNewWinner = 'p2';
+                        }
+
+                        // Clear old winner from downstream
+                        if (oldWinner && oldWinner.id !== winner.id) {
+                            clearDownstream(newBracket, nextMatch, oldWinner.id);
+                        }
+
+                        // Place new winner in next match
+                        if (slotForNewWinner === 'p1') {
+                            nextMatch.participant1 = winner;
+                        } else if (slotForNewWinner === 'p2') {
+                            nextMatch.participant2 = winner;
+                        } else {
+                            // First time or fallback — use slot-based placement
+                            if (matchToUpdate.matchIndex % 2 === 0) nextMatch.participant1 = winner;
+                            else nextMatch.participant2 = winner;
+                        }
+
+                        // Re-sort by seed
                         if (nextMatch.participant1 && nextMatch.participant2 && nextMatch.participant1.seed > nextMatch.participant2.seed) {
                             [nextMatch.participant1, nextMatch.participant2] = [nextMatch.participant2, nextMatch.participant1];
                         }
                     }
                 }
+
+                // If a semi-final (or earlier) result changed, reset third-place match
+                const numRounds = newBracket.length;
+                if (numRounds > 1 && oldWinner && oldWinner.id !== winner.id) {
+                    const semiFinalRoundIndex = numRounds - 2;
+                    if (matchToUpdate.roundIndex <= semiFinalRoundIndex) {
+                        newThirdPlaceMatch = null;
+                    }
+                }
             }
         }
 
+        // Regenerate third-place match if needed
         const numRounds = newBracket.length;
         if (numRounds > 1 && !newThirdPlaceMatch) {
             const semiFinals = newBracket[numRounds - 2];
             if (semiFinals.every(m => m.winner)) {
                 const findLoser = (match: Match): Participant | null => {
-                    if (!match.participant1 || !match.participant2) {
-                        return null;
-                    }
+                    if (!match.participant1 || !match.participant2) return null;
                     return match.winner?.id === match.participant1.id ? match.participant2 : match.participant1;
                 };
-
                 const losers = semiFinals.map(findLoser).filter((p): p is Participant => p !== null);
-
                 if (losers.length === 2) {
                     const [p1, p2] = losers[0].seed < losers[1].seed ? [losers[0], losers[1]] : [losers[1], losers[0]];
                     newThirdPlaceMatch = { id: 999, roundIndex: -1, matchIndex: 0, participant1: p1, participant2: p2, winner: null, nextMatchId: null };
                 } else if (losers.length === 1) {
                     const singleLoser = losers[0];
-                    newThirdPlaceMatch = {
-                        id: 999,
-                        roundIndex: -1,
-                        matchIndex: 0,
-                        participant1: singleLoser,
-                        participant2: null,
-                        winner: singleLoser,
-                        nextMatchId: null
-                    };
+                    newThirdPlaceMatch = { id: 999, roundIndex: -1, matchIndex: 0, participant1: singleLoser, participant2: null, winner: singleLoser, nextMatchId: null };
                 }
             }
         }
@@ -287,6 +325,9 @@ const App: React.FC = () => {
 
         if (isTournamentFinished) {
             newPhase = AppPhase.FINISHED;
+        } else if (prev.phase === AppPhase.FINISHED) {
+            // Was finished but a result was cleared — revert to BRACKET
+            newPhase = AppPhase.BRACKET;
         }
 
         return { ...prev, bracket: newBracket, thirdPlaceMatch: newThirdPlaceMatch, phase: newPhase };
@@ -366,6 +407,35 @@ const App: React.FC = () => {
     }
   }, [createSession]);
 
+  const handleStartVote = useCallback(async (matchId: number, p1Name: string, p2Name: string) => {
+    if (!sessionId || !adminSecret) return;
+    try {
+      await startVoteMutation({ sessionId, adminSecret, matchId, participant1Name: p1Name, participant2Name: p2Name });
+    } catch (e) {
+      console.error("Failed to start vote:", e);
+    }
+  }, [sessionId, adminSecret, startVoteMutation]);
+
+  const handleCloseVote = useCallback(async () => {
+    if (!sessionId || !adminSecret) return;
+    try {
+      await closeVoteMutation({ sessionId, adminSecret });
+    } catch (e) {
+      console.error("Failed to close vote:", e);
+    }
+  }, [sessionId, adminSecret, closeVoteMutation]);
+
+  const handleHostCastVote = useCallback(async (vote: 'p1' | 'p2' | 'omt') => {
+    if (!sessionId) return;
+    const voteId = convexSession?.activeVote?.voteId;
+    if (!voteId) return;
+    try {
+      await castVoteMutation({ sessionId, voteId, vote });
+    } catch (e) {
+      console.error("Failed to cast vote:", e);
+    }
+  }, [sessionId, convexSession?.activeVote?.voteId, castVoteMutation]);
+
   if (sessionParam) {
     return <RegistrationPage sessionId={sessionParam} />;
   }
@@ -410,6 +480,11 @@ const App: React.FC = () => {
             onSetWinner={handleSetWinner}
             phase={phase}
             onReturnToChampionship={handleReturnToChampionship}
+            sessionId={sessionId}
+            onStartVote={sessionId ? handleStartVote : undefined}
+            onCloseVote={sessionId ? handleCloseVote : undefined}
+            onCastVote={sessionId ? handleHostCastVote : undefined}
+            activeVote={convexSession?.activeVote ?? null}
           />
         )}
       </main>

@@ -278,6 +278,89 @@ export const addParticipant = mutation({
   },
 });
 
+// ============ VOTING ============
+
+// Start vote (ADMIN ONLY)
+export const startVote = mutation({
+  args: {
+    sessionId: v.string(),
+    adminSecret: v.string(),
+    matchId: v.number(),
+    participant1Name: v.string(),
+    participant2Name: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", args.sessionId))
+      .first();
+
+    if (!session) throw new Error("Session not found");
+    if (session.adminSecret !== args.adminSecret) throw new Error("Unauthorized");
+
+    await ctx.db.patch(session._id, {
+      activeVote: {
+        voteId: `vote-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        matchId: args.matchId,
+        participant1Name: args.participant1Name,
+        participant2Name: args.participant2Name,
+        votes: [],
+      },
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+// Close vote (ADMIN ONLY)
+export const closeVote = mutation({
+  args: {
+    sessionId: v.string(),
+    adminSecret: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", args.sessionId))
+      .first();
+
+    if (!session) throw new Error("Session not found");
+    if (session.adminSecret !== args.adminSecret) throw new Error("Unauthorized");
+
+    await ctx.db.patch(session._id, {
+      activeVote: null,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+// Cast vote (PUBLIC - judges/spectators)
+export const castVote = mutation({
+  args: {
+    sessionId: v.string(),
+    voteId: v.string(),
+    vote: v.union(v.literal("p1"), v.literal("p2"), v.literal("omt")),
+  },
+  handler: async (ctx, args) => {
+    const session = await ctx.db
+      .query("sessions")
+      .withIndex("by_sessionId", (q) => q.eq("sessionId", args.sessionId))
+      .first();
+
+    if (!session) throw new Error("Session not found");
+    if (!session.activeVote) throw new Error("No active vote");
+    if (session.activeVote.voteId !== args.voteId) throw new Error("Vote expired");
+    if (session.activeVote.votes.length >= 3) throw new Error("Voting complete");
+
+    await ctx.db.patch(session._id, {
+      activeVote: {
+        ...session.activeVote,
+        votes: [...session.activeVote.votes, args.vote],
+      },
+      updatedAt: Date.now(),
+    });
+  },
+});
+
 // Remove participant (ADMIN ONLY)
 export const removeParticipant = mutation({
   args: {

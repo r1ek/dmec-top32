@@ -1,11 +1,122 @@
-import React, { useState, useMemo } from 'react';
-import { useQuery } from "convex/react";
+import React, { useState, useMemo, useEffect } from 'react';
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../convex/_generated/api";
-import type { ChampionshipStanding, Participant } from '../types';
+import type { ActiveVote, ChampionshipStanding, Participant } from '../types';
 import { AppPhase } from '../constants';
 import TournamentBracket from './TournamentBracket';
 
 type ConnectionStatus = 'connecting' | 'live' | 'error';
+
+const VotingOverlay: React.FC<{ activeVote: ActiveVote; sessionId: string }> = ({ activeVote, sessionId }) => {
+    const castVote = useMutation(api.sessions.castVote);
+    const [hasVoted, setHasVoted] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+
+    const votedKey = `voted-${activeVote.voteId}`;
+
+    useEffect(() => {
+        if (sessionStorage.getItem(votedKey)) {
+            setHasVoted(true);
+        }
+    }, [votedKey]);
+
+    const handleVote = async (vote: 'p1' | 'p2' | 'omt') => {
+        if (submitting || hasVoted) return;
+        setSubmitting(true);
+        try {
+            await castVote({ sessionId, voteId: activeVote.voteId, vote });
+            sessionStorage.setItem(votedKey, 'true');
+            setHasVoted(true);
+        } catch (e) {
+            console.error("Vote failed:", e);
+        } finally {
+            setSubmitting(false);
+        }
+    };
+
+    const { participant1Name, participant2Name, votes } = activeVote;
+    const totalVotes = votes.length;
+    const isComplete = totalVotes >= 3;
+
+    if (isComplete) {
+        const p1Count = votes.filter(v => v === 'p1').length;
+        const p2Count = votes.filter(v => v === 'p2').length;
+        const omtCount = votes.filter(v => v === 'omt').length;
+
+        let resultText = 'Viik!';
+        let resultColor = 'text-yellow-300';
+        if (p1Count > p2Count && p1Count > omtCount) { resultText = `${participant1Name} võitis!`; resultColor = 'text-blue-300'; }
+        else if (p2Count > p1Count && p2Count > omtCount) { resultText = `${participant2Name} võitis!`; resultColor = 'text-red-300'; }
+        else if (omtCount > p1Count && omtCount > p2Count) { resultText = 'OMT - veel üks kord!'; resultColor = 'text-yellow-300'; }
+
+        return (
+            <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+                <div className="bg-gray-800 rounded-xl p-6 max-w-sm w-full text-center border border-purple-500 shadow-2xl">
+                    <h3 className="text-lg font-bold text-purple-300 mb-4">Hääletus lõppenud!</h3>
+                    <div className="flex gap-3 mb-4">
+                        <div className="flex-1 bg-blue-900/40 rounded-lg p-3">
+                            <div className="text-sm text-gray-400">{participant1Name}</div>
+                            <div className="text-3xl font-bold text-blue-300">{p1Count}</div>
+                        </div>
+                        <div className="flex-1 bg-yellow-900/40 rounded-lg p-3">
+                            <div className="text-sm text-gray-400">OMT</div>
+                            <div className="text-3xl font-bold text-yellow-300">{omtCount}</div>
+                        </div>
+                        <div className="flex-1 bg-red-900/40 rounded-lg p-3">
+                            <div className="text-sm text-gray-400">{participant2Name}</div>
+                            <div className="text-3xl font-bold text-red-300">{p2Count}</div>
+                        </div>
+                    </div>
+                    <div className={`text-xl font-bold ${resultColor}`}>{resultText}</div>
+                </div>
+            </div>
+        );
+    }
+
+    if (hasVoted) {
+        return (
+            <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+                <div className="bg-gray-800 rounded-xl p-6 max-w-sm w-full text-center border border-purple-500 shadow-2xl">
+                    <h3 className="text-lg font-bold text-purple-300 mb-2">Hääl antud!</h3>
+                    <p className="text-gray-400">Ootan teisi hindajaid... {totalVotes}/3</p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+            <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full border border-purple-500 shadow-2xl">
+                <h3 className="text-lg font-bold text-purple-300 text-center mb-2">Kohtunike hääletus</h3>
+                <p className="text-gray-400 text-center text-sm mb-6">{participant1Name} vs {participant2Name}</p>
+                <div className="flex flex-col gap-3">
+                    <button
+                        onClick={() => handleVote('p1')}
+                        disabled={submitting}
+                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors"
+                    >
+                        {participant1Name}
+                    </button>
+                    <button
+                        onClick={() => handleVote('omt')}
+                        disabled={submitting}
+                        className="bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-600 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors"
+                    >
+                        OMT (veel üks kord)
+                    </button>
+                    <button
+                        onClick={() => handleVote('p2')}
+                        disabled={submitting}
+                        className="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors"
+                    >
+                        {participant2Name}
+                    </button>
+                </div>
+                <p className="text-gray-500 text-xs text-center mt-4">Hääled: {totalVotes}/3</p>
+            </div>
+        </div>
+    );
+};
 
 const LiveQualificationResults: React.FC<{ participants: Participant[], defaultCollapsed?: boolean }> = ({ participants, defaultCollapsed = false }) => {
     const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
@@ -179,12 +290,6 @@ const LiveResultsView: React.FC<{ sessionId: string }> = ({ sessionId }) => {
 
         return (
             <div className="space-y-8">
-                { (phase === AppPhase.QUALIFICATION || showBracket) &&
-                    <LiveQualificationResults
-                        participants={competitionParticipants}
-                        defaultCollapsed={showBracket}
-                    />
-                }
                 { showBracket &&
                     <TournamentBracket
                         participants={competitionParticipants}
@@ -194,6 +299,12 @@ const LiveResultsView: React.FC<{ sessionId: string }> = ({ sessionId }) => {
                         phase={phase as any}
                         onReturnToChampionship={() => {}} // Not applicable
                         isReadOnly={true}
+                    />
+                }
+                { (phase === AppPhase.QUALIFICATION || showBracket) &&
+                    <LiveQualificationResults
+                        participants={competitionParticipants}
+                        defaultCollapsed={showBracket}
                     />
                 }
                 { (phase === AppPhase.CHAMPIONSHIP_VIEW || phase === AppPhase.FINISHED) &&
@@ -206,6 +317,11 @@ const LiveResultsView: React.FC<{ sessionId: string }> = ({ sessionId }) => {
     return (
         <div className="min-h-screen bg-gray-900 text-gray-200 font-sans p-4 sm:p-6 lg:p-8">
             <LiveStatusIndicator status={connectionStatus} />
+
+            {/* Judge voting overlay */}
+            {session?.activeVote && (
+                <VotingOverlay activeVote={session.activeVote as ActiveVote} sessionId={sessionId} />
+            )}
 
             {/* Easter egg: floating leks appears on updates */}
             {showEasterEgg && (

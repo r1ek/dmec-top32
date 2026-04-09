@@ -44,6 +44,16 @@ export default defineSchema({
     thirdPlaceMatch: v.union(matchValidator, v.null()),
     totalCompetitions: v.union(v.number(), v.null()),
     competitionsHeld: v.number(),
+    activeVote: v.optional(v.union(
+      v.object({
+        voteId: v.string(),
+        matchId: v.number(),
+        participant1Name: v.string(),
+        participant2Name: v.string(),
+        votes: v.array(v.union(v.literal("p1"), v.literal("p2"), v.literal("omt"))),
+      }),
+      v.null()
+    )),
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_sessionId", ["sessionId"]),
