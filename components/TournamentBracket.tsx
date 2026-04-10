@@ -206,6 +206,7 @@ interface TournamentBracketProps {
   onStartVote?: (matchId: number, p1Name: string, p2Name: string) => void;
   onCloseVote?: () => void;
   onCastVote?: (vote: 'p1' | 'p2' | 'omt') => void;
+  onConfirmVoteWinner?: (matchId: number, winnerName: string) => void;
   activeVote?: ActiveVote | null;
 }
 
@@ -218,12 +219,25 @@ const getRoundName = (numMatches: number) => {
 };
 
 
-const VoteStatusPanel: React.FC<{
+const HostVoteModal: React.FC<{
     activeVote: ActiveVote;
     onClose: () => void;
     onCastVote?: (vote: 'p1' | 'p2' | 'omt') => void;
-}> = ({ activeVote, onClose, onCastVote }) => {
-    const { participant1Name, participant2Name, votes } = activeVote;
+    onConfirmWinner?: (matchId: number, winnerName: string) => void;
+    onStartVote?: (matchId: number, p1Name: string, p2Name: string) => void;
+}> = ({ activeVote, onClose, onCastVote, onConfirmWinner, onStartVote }) => {
+    const [dismissed, setDismissed] = useState(false);
+    const [lastVoteId, setLastVoteId] = useState(activeVote.voteId);
+
+    // Reset dismissed when a new vote starts
+    if (activeVote.voteId !== lastVoteId) {
+        setDismissed(false);
+        setLastVoteId(activeVote.voteId);
+    }
+
+    if (dismissed) return null;
+
+    const { participant1Name, participant2Name, votes, matchId } = activeVote;
     const p1Count = votes.filter(v => v === 'p1').length;
     const p2Count = votes.filter(v => v === 'p2').length;
     const omtCount = votes.filter(v => v === 'omt').length;
@@ -236,45 +250,79 @@ const VoteStatusPanel: React.FC<{
         return 'Viik - otsusta ise!';
     };
 
+    const getWinnerName = (): string | null => {
+        if (p1Count > p2Count && p1Count > omtCount) return participant1Name;
+        if (p2Count > p1Count && p2Count > omtCount) return participant2Name;
+        return null; // OMT or tie — no clear winner
+    };
+
+    const handleConfirm = () => {
+        const winnerName = getWinnerName();
+        if (winnerName && onConfirmWinner) {
+            onConfirmWinner(matchId, winnerName);
+            onClose(); // close vote in Convex
+        }
+    };
+
+    const handleRevote = () => {
+        if (onStartVote) {
+            onStartVote(matchId, participant1Name, participant2Name);
+        }
+    };
+
+    const closeBtn = (
+        <button onClick={() => setDismissed(true)} className="absolute top-3 right-3 text-gray-400 hover:text-white text-xl leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-700">✕</button>
+    );
+
     return (
-        <div className="bg-purple-900/50 border border-purple-500 rounded-lg p-4 mb-4">
-            <div className="flex items-center justify-between mb-3">
-                <h3 className="font-bold text-purple-300">Hääletus: {participant1Name} vs {participant2Name}</h3>
-                <button onClick={onClose} className="text-gray-400 hover:text-white text-sm px-2 py-1 rounded hover:bg-gray-700">Sulge</button>
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+            <div className="relative bg-gray-800 rounded-xl p-6 max-w-sm w-full border border-purple-500 shadow-2xl">
+                {closeBtn}
+                <h3 className="text-lg font-bold text-purple-300 text-center mb-1">Kohtunike hääletus</h3>
+                <p className="text-gray-400 text-center text-sm mb-4">{participant1Name} vs {participant2Name}</p>
+
+                {isComplete ? (
+                    <>
+                        <div className="flex gap-3 mb-3 text-center">
+                            <div className={`flex-1 rounded-lg p-3 ${p1Count > 0 ? 'bg-purple-900/40' : 'bg-gray-700/50'}`}>
+                                <div className="text-sm text-gray-400">{participant1Name}</div>
+                                <div className="text-3xl font-bold text-purple-300">{p1Count}</div>
+                            </div>
+                            <div className={`flex-1 rounded-lg p-3 ${omtCount > 0 ? 'bg-yellow-900/40' : 'bg-gray-700/50'}`}>
+                                <div className="text-sm text-gray-400">OMT</div>
+                                <div className="text-3xl font-bold text-yellow-300">{omtCount}</div>
+                            </div>
+                            <div className={`flex-1 rounded-lg p-3 ${p2Count > 0 ? 'bg-purple-900/40' : 'bg-gray-700/50'}`}>
+                                <div className="text-sm text-gray-400">{participant2Name}</div>
+                                <div className="text-3xl font-bold text-purple-300">{p2Count}</div>
+                            </div>
+                        </div>
+                        <div className="text-center text-lg font-bold text-purple-300 mb-4">{getResultText()}</div>
+                        <div className="flex gap-2">
+                            {getWinnerName() && (
+                                <button onClick={handleConfirm} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors">Kinnita</button>
+                            )}
+                            <button onClick={handleRevote} className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors">Uus hääletus</button>
+                            <button onClick={() => { onClose(); setDismissed(true); }} className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-2.5 px-4 rounded-lg transition-colors">Sulge</button>
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <div className="text-center text-sm text-gray-400 mb-4">Ootan hääli... {votes.length}/3</div>
+                        {/* Host can vote too */}
+                        {onCastVote && (
+                            <div className="flex gap-2 mb-3">
+                                <button onClick={() => onCastVote('p1')} className="flex-1 bg-purple-600/50 hover:bg-purple-600 text-white text-sm py-2 rounded-lg transition-colors">{participant1Name}</button>
+                                <button onClick={() => onCastVote('omt')} className="flex-1 bg-yellow-600/50 hover:bg-yellow-600 text-white text-sm py-2 rounded-lg transition-colors">OMT</button>
+                                <button onClick={() => onCastVote('p2')} className="flex-1 bg-purple-600/50 hover:bg-purple-600 text-white text-sm py-2 rounded-lg transition-colors">{participant2Name}</button>
+                            </div>
+                        )}
+                        <div className="text-center">
+                            <button onClick={() => { onClose(); setDismissed(true); }} className="text-gray-400 hover:text-white text-sm px-3 py-1 rounded hover:bg-gray-700">Sulge hääletus</button>
+                        </div>
+                    </>
+                )}
             </div>
-            {isComplete ? (
-                <>
-                    <div className="flex gap-4 text-center">
-                        <div className={`flex-1 rounded p-2 ${p1Count > 0 ? 'bg-blue-900/50' : 'bg-gray-800'}`}>
-                            <div className="text-sm text-gray-400">{participant1Name}</div>
-                            <div className="text-2xl font-bold text-blue-300">{p1Count}</div>
-                        </div>
-                        <div className={`flex-1 rounded p-2 ${omtCount > 0 ? 'bg-yellow-900/50' : 'bg-gray-800'}`}>
-                            <div className="text-sm text-gray-400">OMT</div>
-                            <div className="text-2xl font-bold text-yellow-300">{omtCount}</div>
-                        </div>
-                        <div className={`flex-1 rounded p-2 ${p2Count > 0 ? 'bg-red-900/50' : 'bg-gray-800'}`}>
-                            <div className="text-sm text-gray-400">{participant2Name}</div>
-                            <div className="text-2xl font-bold text-red-300">{p2Count}</div>
-                        </div>
-                    </div>
-                    <div className="mt-2 text-center">
-                        <span className="text-lg font-bold text-purple-300">{getResultText()}</span>
-                    </div>
-                </>
-            ) : (
-                <div className="mt-2 text-center text-sm text-gray-400">
-                    <span>Ootan hääli... {votes.length}/3</span>
-                </div>
-            )}
-            {/* Host can vote too */}
-            {onCastVote && !isComplete && (
-                <div className="mt-3 flex gap-2">
-                    <button onClick={() => onCastVote('p1')} className="flex-1 bg-blue-600/50 hover:bg-blue-600 text-white text-xs py-1.5 rounded transition-colors">{participant1Name}</button>
-                    <button onClick={() => onCastVote('omt')} className="flex-1 bg-yellow-600/50 hover:bg-yellow-600 text-white text-xs py-1.5 rounded transition-colors">OMT</button>
-                    <button onClick={() => onCastVote('p2')} className="flex-1 bg-red-600/50 hover:bg-red-600 text-white text-xs py-1.5 rounded transition-colors">{participant2Name}</button>
-                </div>
-            )}
         </div>
     );
 };
@@ -291,6 +339,7 @@ const TournamentBracket: React.FC<TournamentBracketProps> = ({
     onStartVote,
     onCloseVote,
     onCastVote,
+    onConfirmVoteWinner,
     activeVote,
 }) => {
     if (!bracketData || bracketData.length === 0) {
@@ -319,7 +368,7 @@ const TournamentBracket: React.FC<TournamentBracketProps> = ({
     return (
         <>
             {activeVote && onCloseVote && !isReadOnly && (
-                <VoteStatusPanel activeVote={activeVote} onClose={onCloseVote} onCastVote={onCastVote} />
+                <HostVoteModal activeVote={activeVote} onClose={onCloseVote} onCastVote={onCastVote} onConfirmWinner={onConfirmVoteWinner} onStartVote={onStartVote} />
             )}
             <div className="p-4 bg-gray-900/50 rounded-xl overflow-x-auto">
                 <div className="flex justify-start items-start">

@@ -436,6 +436,17 @@ const App: React.FC = () => {
     }
   }, [sessionId, convexSession?.activeVote?.voteId, castVoteMutation]);
 
+  const handleConfirmVoteWinner = useCallback((matchId: number, winnerName: string) => {
+    // Find the match in the bracket and get the Participant object by name
+    const allMatches = [...bracket.flat(), thirdPlaceMatch].filter(Boolean) as Match[];
+    const match = allMatches.find(m => m.id === matchId);
+    if (!match) return;
+    const winner = [match.participant1, match.participant2].find(p => p?.name === winnerName);
+    if (winner) {
+      handleSetWinner(matchId, winner);
+    }
+  }, [bracket, thirdPlaceMatch, handleSetWinner]);
+
   if (sessionParam) {
     return <RegistrationPage sessionId={sessionParam} />;
   }
@@ -484,6 +495,7 @@ const App: React.FC = () => {
             onStartVote={sessionId ? handleStartVote : undefined}
             onCloseVote={sessionId ? handleCloseVote : undefined}
             onCastVote={sessionId ? handleHostCastVote : undefined}
+            onConfirmVoteWinner={sessionId ? handleConfirmVoteWinner : undefined}
             activeVote={convexSession?.activeVote ?? null}
           />
         )}

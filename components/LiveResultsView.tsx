@@ -10,23 +10,35 @@ type ConnectionStatus = 'connecting' | 'live' | 'error';
 const VotingOverlay: React.FC<{ activeVote: ActiveVote; sessionId: string }> = ({ activeVote, sessionId }) => {
     const castVote = useMutation(api.sessions.castVote);
     const [hasVoted, setHasVoted] = useState(false);
+    const [myVote, setMyVote] = useState<'p1' | 'p2' | 'omt' | null>(null);
     const [submitting, setSubmitting] = useState(false);
+    const [dismissed, setDismissed] = useState(false);
 
     const votedKey = `voted-${activeVote.voteId}`;
 
+    // Check sessionStorage for existing vote, reset dismissed on new voteId
     useEffect(() => {
-        if (sessionStorage.getItem(votedKey)) {
+        const stored = sessionStorage.getItem(votedKey);
+        if (stored) {
             setHasVoted(true);
+            setMyVote(stored as 'p1' | 'p2' | 'omt');
+        } else {
+            setHasVoted(false);
+            setMyVote(null);
         }
+        setDismissed(false);
     }, [votedKey]);
+
+    if (dismissed) return null;
 
     const handleVote = async (vote: 'p1' | 'p2' | 'omt') => {
         if (submitting || hasVoted) return;
         setSubmitting(true);
         try {
             await castVote({ sessionId, voteId: activeVote.voteId, vote });
-            sessionStorage.setItem(votedKey, 'true');
+            sessionStorage.setItem(votedKey, vote);
             setHasVoted(true);
+            setMyVote(vote);
         } catch (e) {
             console.error("Vote failed:", e);
         } finally {
@@ -38,6 +50,18 @@ const VotingOverlay: React.FC<{ activeVote: ActiveVote; sessionId: string }> = (
     const totalVotes = votes.length;
     const isComplete = totalVotes >= 3;
 
+    const getMyVoteLabel = () => {
+        if (myVote === 'p1') return participant1Name;
+        if (myVote === 'p2') return participant2Name;
+        if (myVote === 'omt') return 'OMT';
+        return '';
+    };
+
+    // Close button (always available)
+    const closeBtn = (
+        <button onClick={() => setDismissed(true)} className="absolute top-3 right-3 text-gray-400 hover:text-white text-xl leading-none w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-700">✕</button>
+    );
+
     if (isComplete) {
         const p1Count = votes.filter(v => v === 'p1').length;
         const p2Count = votes.filter(v => v === 'p2').length;
@@ -45,26 +69,27 @@ const VotingOverlay: React.FC<{ activeVote: ActiveVote; sessionId: string }> = (
 
         let resultText = 'Viik!';
         let resultColor = 'text-yellow-300';
-        if (p1Count > p2Count && p1Count > omtCount) { resultText = `${participant1Name} võitis!`; resultColor = 'text-blue-300'; }
-        else if (p2Count > p1Count && p2Count > omtCount) { resultText = `${participant2Name} võitis!`; resultColor = 'text-red-300'; }
+        if (p1Count > p2Count && p1Count > omtCount) { resultText = `${participant1Name} võitis!`; resultColor = 'text-purple-300'; }
+        else if (p2Count > p1Count && p2Count > omtCount) { resultText = `${participant2Name} võitis!`; resultColor = 'text-purple-300'; }
         else if (omtCount > p1Count && omtCount > p2Count) { resultText = 'OMT - veel üks kord!'; resultColor = 'text-yellow-300'; }
 
         return (
             <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-                <div className="bg-gray-800 rounded-xl p-6 max-w-sm w-full text-center border border-purple-500 shadow-2xl">
+                <div className="relative bg-gray-800 rounded-xl p-6 max-w-sm w-full text-center border border-purple-500 shadow-2xl">
+                    {closeBtn}
                     <h3 className="text-lg font-bold text-purple-300 mb-4">Hääletus lõppenud!</h3>
                     <div className="flex gap-3 mb-4">
-                        <div className="flex-1 bg-blue-900/40 rounded-lg p-3">
+                        <div className={`flex-1 rounded-lg p-3 ${p1Count > 0 ? 'bg-purple-900/40' : 'bg-gray-700/50'}`}>
                             <div className="text-sm text-gray-400">{participant1Name}</div>
-                            <div className="text-3xl font-bold text-blue-300">{p1Count}</div>
+                            <div className="text-3xl font-bold text-purple-300">{p1Count}</div>
                         </div>
-                        <div className="flex-1 bg-yellow-900/40 rounded-lg p-3">
+                        <div className={`flex-1 rounded-lg p-3 ${omtCount > 0 ? 'bg-yellow-900/40' : 'bg-gray-700/50'}`}>
                             <div className="text-sm text-gray-400">OMT</div>
                             <div className="text-3xl font-bold text-yellow-300">{omtCount}</div>
                         </div>
-                        <div className="flex-1 bg-red-900/40 rounded-lg p-3">
+                        <div className={`flex-1 rounded-lg p-3 ${p2Count > 0 ? 'bg-purple-900/40' : 'bg-gray-700/50'}`}>
                             <div className="text-sm text-gray-400">{participant2Name}</div>
-                            <div className="text-3xl font-bold text-red-300">{p2Count}</div>
+                            <div className="text-3xl font-bold text-purple-300">{p2Count}</div>
                         </div>
                     </div>
                     <div className={`text-xl font-bold ${resultColor}`}>{resultText}</div>
@@ -76,9 +101,11 @@ const VotingOverlay: React.FC<{ activeVote: ActiveVote; sessionId: string }> = (
     if (hasVoted) {
         return (
             <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-                <div className="bg-gray-800 rounded-xl p-6 max-w-sm w-full text-center border border-purple-500 shadow-2xl">
+                <div className="relative bg-gray-800 rounded-xl p-6 max-w-sm w-full text-center border border-purple-500 shadow-2xl">
+                    {closeBtn}
                     <h3 className="text-lg font-bold text-purple-300 mb-2">Hääl antud!</h3>
-                    <p className="text-gray-400">Ootan teisi hindajaid... {totalVotes}/3</p>
+                    <p className="text-gray-300 mb-1">Sinu valik: <span className="font-bold text-white">{getMyVoteLabel()}</span></p>
+                    <p className="text-gray-400 text-sm">Ootan teisi hindajaid... {totalVotes}/3</p>
                 </div>
             </div>
         );
@@ -86,14 +113,15 @@ const VotingOverlay: React.FC<{ activeVote: ActiveVote; sessionId: string }> = (
 
     return (
         <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
-            <div className="bg-gray-800 rounded-xl p-6 max-w-md w-full border border-purple-500 shadow-2xl">
+            <div className="relative bg-gray-800 rounded-xl p-6 max-w-md w-full border border-purple-500 shadow-2xl">
+                {closeBtn}
                 <h3 className="text-lg font-bold text-purple-300 text-center mb-2">Kohtunike hääletus</h3>
                 <p className="text-gray-400 text-center text-sm mb-6">{participant1Name} vs {participant2Name}</p>
                 <div className="flex flex-col gap-3">
                     <button
                         onClick={() => handleVote('p1')}
                         disabled={submitting}
-                        className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors"
+                        className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors"
                     >
                         {participant1Name}
                     </button>
@@ -107,7 +135,7 @@ const VotingOverlay: React.FC<{ activeVote: ActiveVote; sessionId: string }> = (
                     <button
                         onClick={() => handleVote('p2')}
                         disabled={submitting}
-                        className="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors"
+                        className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors"
                     >
                         {participant2Name}
                     </button>
